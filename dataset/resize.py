@@ -4,11 +4,9 @@ from PIL import Image
 
 
 def resize_image(image, size):
-    """Resize an image to the given size."""
     return image.resize(size, Image.ANTIALIAS)
 
 def resize_images(image_dir, output_dir, size):
-    """Resize the images in 'image_dir' and save into 'output_dir'."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -32,9 +30,9 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--image_dir', type=str, default='./data/train2014/',
+    parser.add_argument('--image_dir', type=str, default='./data/COCO/train2014/',
                         help='directory for train images')
-    parser.add_argument('--output_dir', type=str, default='./data/resized2014/',
+    parser.add_argument('--output_dir', type=str, default='./data/COCO/resized2014/',
                         help='directory for saving resized images')
     parser.add_argument('--image_size', type=int, default=256,
                         help='size for image after processing')

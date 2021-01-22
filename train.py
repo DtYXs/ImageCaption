@@ -1,81 +1,129 @@
 import os
 import pickle
+import time
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence
 from torchvision import transforms
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from tqdm import tqdm
 
-from model import EncoderCNN, DecoderRNN
+from model import *
 from dataset.data_loader import get_loader
 from vocab.Vocabulary import Vocabulary
 
 
+def updateBN(model):
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.weight.grad.data.add_(1e-4 * torch.sign(m.weight.data))  # L1
+
+
 def main():
     ####################################################
-    # 参数配置
+    # config
     ####################################################
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    args = {}
-
-    args['dataset'] = 'Flickr8k'
-    args['vocab_word2idx_path'] = './vocab/save/' + args['dataset'] + '/vocab/thre5_word2idx.pkl'
-    args['vocab_idx2word_path'] = './vocab/save/' + args['dataset'] + '/vocab/thre5_idx2word.pkl'
-    args['vocab_idx_path'] = './vocab/save/' + args['dataset'] + '/vocab/thre5_idx.pkl'
-    args['crop_size'] = 224
-    args['batch_size'] = 128
-    args['embed_size'] = 256
-    args['hidden_size'] = 512
-    args['epoch'] = 10
-    args['save_step'] = 1
-    args['model_save_root'] = './save/'
+    config = {}
+    config['prune'] = False
+    config['use_attention'] = True
+    config['dataset'] = 'COCO'
+    config['vocab_word2idx_path'] = './vocab/save/' + 'COCO' + '/vocab/' + 'thre5_word2idx.pkl'
+    config['vocab_idx2word_path'] = './vocab/save/' + 'COCO' + '/vocab/' + 'thre5_idx2word.pkl'
+    config['vocab_idx_path'] = './vocab/save/' + 'COCO' + '/vocab/' + 'thre5_idx.pkl'
+    config['crop_size'] = 224
+    config['images_root'] = 'E:/DL/COCO/train2014_resized'
+    config['json_file_path_train'] = './data/COCO/annotations/captions_train2014.json'
+    config['json_file_path_val'] = './data/COCO/annotations/captions_val2014.json'
+    config['batch_size'] = 18
+    config['embed_size'] = 256
+    config['hidden_size'] = 512
+    config['learning_rate'] = 1e-4
+    config['epoch_num'] = 5
+    config['save_step'] = 1
+    config['model_save_root'] = './save/' if (config['prune'] is True) else './save/cut/'
 
 
     ####################################################
-    # 构建词表
+    # load vocabulary
     ####################################################
     vocab = Vocabulary()
-    with open(args['vocab_word2idx_path'], 'rb') as f:
+    with open(config['vocab_word2idx_path'], 'rb') as f:
         vocab.word2idx = pickle.load(f)
-    with open(args['vocab_idx2word_path'], 'rb') as f:
+    with open(config['vocab_idx2word_path'], 'rb') as f:
         vocab.idx2word = pickle.load(f)
-    with open(args['vocab_idx_path'], 'rb') as f:
+    with open(config['vocab_idx_path'], 'rb') as f:
         vocab.idx = pickle.load(f)
 
+    ####################################################
+    # create data_loader
+    ####################################################
+    normalize = {
+        'Flickr8k': [(0.4580, 0.4464, 0.4032),
+                     (0.2318, 0.2229, 0.2269)],
+        'Flickr30k': None,
+        'COCO': [(0.485, 0.456, 0.406),
+                 (0.229, 0.224, 0.225)]}
 
-    ####################################################
-    # 创建data_loader
-    ####################################################
     transform = transforms.Compose([
-        transforms.RandomCrop(args['crop_size']),
+        transforms.RandomCrop(config['crop_size']),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.4580, 0.4464, 0.4032),
-                             (0.2318, 0.2229, 0.2269))
+        transforms.Normalize(normalize[config['dataset']][0],
+                             normalize[config['dataset']][1])
     ])
 
-    loader_train = get_loader(dataset_name='Flickr8k',
-                              images_root='E:/DL/Flickr/8k/Flicker8k_Dataset_resize256x256',
-                              json_file_path='E:/DL/Flickr/8k/dataset_flickr8k.json',
+    loader_train = get_loader(dataset_name=config['dataset'],
+                              images_root=config['images_root'],
+                              json_file_path=config['json_file_path_train'],
                               vocab=vocab,
                               transform=transform,
-                              batch_size=args['batch_size'],
+                              batch_size=config['batch_size'],
                               shuffle=True,
                               is_train=True
                               )
+    loader_val = get_loader(dataset_name=config['dataset'],
+                            images_root=config['images_root'],
+                            json_file_path=config['json_file_path_val'],
+                            vocab=vocab,
+                            transform=transform,
+                            batch_size=1,
+                            shuffle=False,
+                            is_val=True
+                            )
+
+    ####################################################
+    # create model
+    ####################################################
+    encoder = EncoderCNN(config['embed_size']).to(device)
+    decoder = DecoderRNN(config['embed_size'], config['hidden_size'], len(vocab), 1).to(device)
+    if config['use_attention'] is True:
+        encoder = EncoderCNN_VGG_Attention().to(device)
+        decoder = DecoderRNN_Attention(512, config['embed_size'], config['hidden_size'], len(vocab), 1).to(device)
+    if config['prune'] is True:
+        encoder = EncoderCNN_prune(config['embed_size']).to(device)
 
 
-    encoder = EncoderCNN(args['embed_size']).to(device)
-    decoder = DecoderRNN(args['embed_size'], args['hidden_size'], len(vocab), 1).to(device)
-
-
+    ####################################################
+    # create trainer
+    ####################################################
     criterion = nn.CrossEntropyLoss()
-    params = list(decoder.parameters()) + list(encoder.linear.parameters()) + list(encoder.bn.parameters())
-    optimizer = torch.optim.Adam(params, lr=1e-3)
+    params = list(decoder.parameters())
+    params += (list(encoder.linear.parameters()) + list(encoder.bn.parameters())) if (config['use_attention'] is False) else []
+    # optimizer = torch.optim.Adam(params, lr=config['learning_rate'])
+    # if config['prune'] is True:
+    params_vgg = list(encoder.vgg.parameters())
+    params = [{'params': params},
+              {'params': params_vgg, 'lr': config['learning_rate'] * 0.1}]
+    optimizer = torch.optim.Adam(params, lr=config['learning_rate'])
 
     total_step = len(loader_train)
-    for epoch in range(args['epoch']):
-        for i, (images, captions, lengths) in enumerate(loader_train):
+    # best_BLEU4_score = -1
+    for epoch in range(config['epoch_num']):
+        encoder.train()
+        decoder.train()
+        for i, (images, captions, lengths) in enumerate(tqdm(loader_train)):
 
             # Set mini-batch dataset
             images = images.to(device)
@@ -84,37 +132,62 @@ def main():
 
             # Forward, backward and optimize
             features = encoder(images)
-            outputs = decoder(features, captions, lengths)
-            loss = criterion(outputs, targets)
+            if config['use_attention']:
+                outputs, alphas = decoder(features, captions, lengths)
+                outputs = outputs.to(device)
+                captions = captions[:, 1:]  # attention初始输入不是CNNfeatures，少输出start
+                lengths = [length - 1 for length in lengths]
+                targets = pack_padded_sequence(captions, lengths, batch_first=True)[0]
+                loss = criterion(outputs, targets)
+                loss += 1. * ((1. - alphas.sum(dim=1)) ** 2).mean()
+            else:
+                outputs = decoder(features, captions, lengths)
+                loss = criterion(outputs, targets)
+            # loss = criterion(outputs, targets)
             decoder.zero_grad()
             encoder.zero_grad()
             loss.backward()
+            if config['prune'] is True:
+                updateBN(encoder)
             optimizer.step()
 
             # Print log info
             if i % 10 == 0:
-                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Perplexity: {:5.4f}'
-                      .format(epoch, args['epoch'], i, total_step, loss.item(), np.exp(loss.item())))
+                print('Epoch [{}/{}], Iteration [{}/{}], Loss: {:.5f}, Perplexity: {:5.5f}'
+                      .format(epoch, config['epoch_num'], i, total_step, loss.item(), np.exp(loss.item())))
 
         # Save the model checkpoints
-        if epoch % args['save_step'] == 0:
-            torch.save(decoder.state_dict(), os.path.join(
-                args['model_save_root'], 'decoder-{}-{}.ckpt'.format(epoch+1, i+1)))
-            torch.save(encoder.state_dict(), os.path.join(
-                args['model_save_root'], 'encoder-{}-{}.ckpt'.format(epoch+1, i+1)))
+        if (epoch + 1) % config['save_step'] == 0:
+            # Check BLEU score
 
+            encoder.eval()
+            decoder.eval()
+            BLEU4_score = 0.
+            for i, (image, caption, length) in tqdm(enumerate(loader_val)):
+                image = image.to(device)
+                feature = encoder(image)
+                sampled_ids = decoder.sample(feature)
+                sampled_ids = sampled_ids[0].cpu().numpy()
+                sampled_caption = []
+                for word_id in sampled_ids:
+                    word = vocab.idx2word[word_id]
+                    sampled_caption.append(word)
+                    if word == '<END>':
+                        break
+                raw_caption = [[vocab(int(token)) for token in list(caption[0])]]
+                sampled_caption = sampled_caption[1:-1]  # delete <START> and <END>
+                raw_caption[0] = raw_caption[0][1:-1]  # delete <START> and <END>
+                BLEU4_score += sentence_bleu(raw_caption, sampled_caption, weights=(0.25, 0.25, 0.25, 0.25),
+                                             smoothing_function=SmoothingFunction().method1)
+            BLEU4_score /= (i + 1)
+            torch.save(encoder.state_dict(), os.path.join(
+                config['model_save_root'], config['dataset'], 'encoder-{}-{:.5f}.pth'.format(epoch + 1, BLEU4_score)))
+            torch.save(decoder.state_dict(), os.path.join(
+                config['model_save_root'], config['dataset'], 'decoder-{}-{:.5f}.pth'.format(epoch + 1, BLEU4_score)))
+            print(BLEU4_score)
 
 
 if __name__ == '__main__':
     main()
-
-
-
-
-
-
-
-
-
-
+    print(1)
 

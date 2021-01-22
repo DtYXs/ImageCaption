@@ -18,11 +18,11 @@ class Flickr8k(torch.utils.data.Dataset):
 
         # 读取json
         with open(self.json_file_path, 'r') as f:
-            datas = json.load(f)['images']  # list 8000
+            datas = json.load(f)['images']
 
-        self.captions_raw = defaultdict(list)  # 存储raw caption
-        self.captions_tokens = defaultdict(list)  # 存储tokens caption
-        self.captions = defaultdict(list)  # 存储添加<START>，<END>的tokens
+        self.captions_raw = defaultdict(list)
+        self.captions_tokens = defaultdict(list)
+        self.captions = defaultdict(list)
         self.train_ids, self.val_ids, self.test_ids = [], [], []
         for data in datas:
             img_id = data['filename']
@@ -48,13 +48,6 @@ class Flickr8k(torch.utils.data.Dataset):
         self.test_ids.sort()
 
     def __getitem__(self, index):
-        """
-        Args:
-            index (int): Index
-
-        Returns:
-            tuple: Tuple (image, target). target is a list of captions for the image.
-        """
         if self.is_val:
             img_id = self.val_ids[index]
         elif self.is_test:

@@ -81,7 +81,7 @@ if __name__ == '__main__':
                         help='数据集名称')
     # parser.add_argument('--images_root', type=str, default='E:/DL/Flickr/8k/Flicker8k_Dataset/',
     #                     help='数据集图像根目录')
-    parser.add_argument('--json_file_path', type=str, default='E:/DL/Flickr/8k/dataset_flickr8k.json',
+    parser.add_argument('--json_file_path', type=str, default='./data/Flickr/8k/dataset_flickr8k.json',
                         help='数据集json文件')
     parser.add_argument('--threshold', type=int, default=5,
                         help='过滤单词频率阈值')
